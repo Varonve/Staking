@@ -12,47 +12,35 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         varonve = Varonve(varonveAddress);
     }
 
-    struct stakedNFT {
-        uint256 NFTID;
-        uint256 NFTLevel;
+    struct StakedNFT {
+        uint256 nftID;
+        uint256 nftLevel;
         uint256 lastBalanceUpdateTime;
-        uint256 NFTXPMultiplier;
+        uint256 nftXPMultiplier;
         uint256 balance;
     }
 
     mapping(address => mapping(uint256 => bool)) isStakerOfID;
-    mapping(address => stakedNFT[]) stakedNFTs;
+    mapping(address => StakedNFT[]) stakedNFTs;
     mapping(address => uint256) public totalStakedPerAddress;
-    mapping(address => mapping(uint256 => bool)) toRemove;
 
     bool isPaused = false;
 
     uint256 bonusPerNFTStake = 500;
-    uint256 period = 30; //Real value is 86400, changed for test reasons
+    uint256 period = 86400;
     uint256 xpPerPeriod = 10000;
     uint256 baseMultiplier = 1;
     uint256 levelTwoMultiplier = 2;
-    uint256 LevelThreeMultiplier = 3;
+    uint256 levelThreeMultiplier = 3;
     uint256 levelTwoPrice = 200000;
     uint256 levelThreePrice = 500000;
-    uint256 public totalStakedNFTs;
+    uint256 public totalStakedNFTs = 0;
+    uint256 public totalXPSupply = 0;
 
     event Staked(address indexed user, uint256 tokenID);
     event Unstaked(address indexed user, uint256 tokenID);
 
     // MODIFIERS
-
-    modifier isOwnerOfAll(uint256[] memory IDBatch) {
-        bool valid = true;
-        for (uint256 i = 0; i < IDBatch.length; i++) {
-            if (varonve.ownerOf(IDBatch[i]) != msg.sender) {
-                valid = false;
-                break;
-            }
-        }
-        require(valid, "User is not the owner of all NFTs");
-        _;
-    }
 
     modifier isStakerOfAll(uint256[] memory IDBatch) {
         bool valid = true;
@@ -67,9 +55,7 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
     }
 
     modifier updateXP(address _address) {
-        for (uint256 i = 0; i < stakedNFTs[_address].length; i++) {
-            updateRewardSingleNFT(_address, stakedNFTs[_address][i].NFTID);
-        }
+        updateRewardAllNFTs(_address);
 
         _;
     }
@@ -80,7 +66,6 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         public
         nonReentrant
         updateXP(msg.sender)
-        isOwnerOfAll(IDBatch)
     {
         require(
             isPaused == false,
@@ -90,7 +75,7 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
             varonve.transferFrom(msg.sender, address(this), IDBatch[i]);
 
             stakedNFTs[msg.sender].push(
-                stakedNFT(IDBatch[i], 1, block.timestamp, baseMultiplier, 0)
+                StakedNFT(IDBatch[i], 1, block.timestamp, baseMultiplier, 0)
             );
             isStakerOfID[msg.sender][IDBatch[i]] = true;
             emit Staked(msg.sender, IDBatch[i]);
@@ -108,6 +93,8 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
     {
         for (uint256 i = 0; i < IDBatch.length; i++) {
             varonve.transferFrom(address(this), msg.sender, IDBatch[i]);
+            totalXPSupply -= stakedNFTs[msg.sender][getIndexOfItem(IDBatch[i])]
+                .balance;
             removeSingleItem(IDBatch[i]);
             isStakerOfID[msg.sender][IDBatch[i]] = false;
             emit Unstaked(msg.sender, IDBatch[i]);
@@ -119,27 +106,28 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
 
     // XP MODIFICATIONS
 
-    function levelUP(uint256 id)
-        public
-        nonReentrant
-        isStakerOfAll(viewStakedNFTs(msg.sender))
-        updateXP(msg.sender)
-    {
-        if (stakedNFTs[msg.sender][getIndexOfItem(id)].NFTLevel == 1) {
+    function levelUP(uint256 id) public nonReentrant updateXP(msg.sender) {
+        if (stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel == 1) {
             spendXP(levelTwoPrice, msg.sender);
-            stakedNFTs[msg.sender][getIndexOfItem(id)].balance++;
-        } else if (stakedNFTs[msg.sender][getIndexOfItem(id)].NFTLevel == 2) {
+            stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel++;
+            stakedNFTs[msg.sender][getIndexOfItem(id)]
+                .nftXPMultiplier = levelTwoMultiplier;
+            totalXPSupply -= levelTwoPrice;
+        } else if (stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel == 2) {
             spendXP(levelThreePrice, msg.sender);
-            stakedNFTs[msg.sender][getIndexOfItem(id)].balance++;
+            stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel++;
+            stakedNFTs[msg.sender][getIndexOfItem(id)]
+                .nftXPMultiplier = levelThreeMultiplier;
+            totalXPSupply -= levelThreePrice;
         } else {
             revert("Your NFT reached max level.");
         }
     }
 
-    function spendXP(uint256 amount, address _address) public {
+    function spendXP(uint256 amount, address _address) internal {
         require(showRewards(_address) >= amount, "Your balance is not Enough");
         require(stakedNFTs[_address].length > 0, "No NFTs staked");
-
+        totalXPSupply -= amount;
         uint256 spent = 0;
         uint256 amountPerNFT = amount / stakedNFTs[_address].length;
         for (uint256 i = 0; i < stakedNFTs[_address].length; i++) {
@@ -147,28 +135,34 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
                 stakedNFTs[_address][i].balance -= amountPerNFT;
                 spent += amountPerNFT;
             } else {
-                stakedNFTs[_address][i].balance = 0;
                 spent += stakedNFTs[_address][i].balance;
+                stakedNFTs[_address][i].balance = 0;
             }
         }
 
-        stakedNFTs[_address][stakedNFTs[_address].length - 1]
-            .balance -= (amount - spent);
+        for (uint256 i = stakedNFTs[_address].length - 1; i >= 0; i--) {
+            if (stakedNFTs[_address][i].balance <= amount - spent) {
+                spent += stakedNFTs[_address][i].balance;
+                stakedNFTs[_address][i].balance -= 0;
+            } else {
+                stakedNFTs[_address][i].balance -= (amount - spent);
+                spent = amount;
+                return;
+            }
+        }
     }
 
-    function addXP(uint256 amount, address _address) public {
+    function addXP(uint256 amount, address _address) internal {
+        totalXPSupply += amount;
         uint256 paid = 0;
-        uint256 payPerNFT = amount / stakedNFTs[msg.sender].length;
-        for (uint256 i = 0; i < stakedNFTs[_address].length; i++) {
-            if (stakedNFTs[_address][i].balance >= payPerNFT) {
-                stakedNFTs[_address][i].balance -= payPerNFT;
-                paid += payPerNFT;
-            } else {
-                stakedNFTs[_address][i].balance = 0;
-                paid += stakedNFTs[_address][i].balance;
-            }
+        if (stakedNFTs[_address].length == 0) {
+            return;
         }
-
+        uint256 payPerNFT = amount / stakedNFTs[_address].length;
+        for (uint256 i = 0; i < stakedNFTs[_address].length; i++) {
+            stakedNFTs[_address][i].balance += payPerNFT;
+            paid += payPerNFT;
+        }
         stakedNFTs[_address][stakedNFTs[_address].length - 1]
             .balance += (amount - paid);
     }
@@ -198,8 +192,6 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         return temp;
     }
 
-    // INFO FUNCTION
-
     // Returns all the staked NFTs by address.
     function viewStakedNFTs(address _address)
         public
@@ -210,45 +202,56 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         uint256[] memory temp = new uint256[](length);
 
         for (uint256 i = 0; i < length; i++) {
-            temp[i] = stakedNFTs[_address][i].NFTID;
+            temp[i] = stakedNFTs[_address][i].nftID;
         }
         return temp;
     }
 
-    // Used for showing the user balance without updating.
+    function getStakedNFTDetails(address _address, uint256 id)
+        public
+        view
+        returns (StakedNFT memory)
+    {
+        return stakedNFTs[_address][getIndexOfItem(id)];
+    }
+
+    //REWARD CALCULATIONS
+
+    function rewardCalculationFormula(address _address, uint256 id)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 reward = 0;
+        reward = (stakedNFTs[msg.sender][id].balance +
+            (
+                (((block.timestamp -
+                    stakedNFTs[_address][id].lastBalanceUpdateTime) / period) *
+                    ((xpPerPeriod * stakedNFTs[_address][id].nftXPMultiplier) +
+                        ((stakedNFTs[_address].length - 1) * bonusPerNFTStake)))
+            ));
+        return reward;
+    }
+
     function showRewards(address _address) public view returns (uint256) {
-        stakedNFT[] memory NFTs = stakedNFTs[_address];
+        StakedNFT[] memory NFTs = stakedNFTs[_address];
         uint256 sum = 0;
-        uint256 currentTimeStamp = block.timestamp;
 
         for (uint256 i = 0; i < NFTs.length; i++) {
-            sum += (NFTs[i].balance +
-                (
-                    (((currentTimeStamp - NFTs[i].lastBalanceUpdateTime) /
-                        period) *
-                        ((xpPerPeriod * NFTs[i].NFTXPMultiplier) +
-                            ((NFTs.length - 1) * bonusPerNFTStake)))
-                ));
+            sum += rewardCalculationFormula(_address, i);
+            NFTs[i].lastBalanceUpdateTime = block.timestamp;
         }
         return sum;
     }
 
     // Updates balance in {StakedNFT.balance} of the user and selected ID.
-    function updateRewardSingleNFT(address _address, uint256 id) internal {
-        stakedNFT[] storage NFTs = stakedNFTs[_address];
+    function updateRewardAllNFTs(address _address) internal {
+        StakedNFT[] storage NFTs = stakedNFTs[_address];
 
         for (uint256 i = 0; i < stakedNFTs[_address].length; i++) {
-            if (NFTs[i].NFTID == id) {
-                NFTs[i].balance += (
-                    (((block.timestamp - NFTs[i].lastBalanceUpdateTime) /
-                        period) *
-                        ((xpPerPeriod * NFTs[i].NFTXPMultiplier) +
-                            ((NFTs.length - 1) * bonusPerNFTStake)))
-                );
-                break;
-            } else {
-                continue;
-            }
+            NFTs[i].balance += rewardCalculationFormula(_address, i);
+            NFTs[i].lastBalanceUpdateTime = block.timestamp;
+            totalXPSupply += rewardCalculationFormula(_address, i);
         }
     }
 
@@ -256,7 +259,7 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
 
     function getIndexOfItem(uint256 idOfIndex) internal view returns (uint256) {
         for (uint256 i = 0; i < stakedNFTs[msg.sender].length; i++) {
-            if (idOfIndex == stakedNFTs[msg.sender][i].NFTID) {
+            if (idOfIndex == stakedNFTs[msg.sender][i].nftID) {
                 return i;
             }
         }
@@ -270,13 +273,11 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         stakedNFTs[msg.sender].pop();
     }
 
-    function togglePause() external onlyOwner nonReentrant {
+    function togglePause() external onlyOwner {
         isPaused = !isPaused;
     }
 
     /* ----------------- RAFFLE SYSTEM ----------------- */
-
-    // TO BE UPDATED (NOT THE LATEST VERSION)
 
     event JoinedGiveaway(
         address indexed buyer,
@@ -286,7 +287,7 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
 
     uint256 raffleCounter = 1;
 
-    struct raffle {
+    struct Raffle {
         uint256 id;
         string rewardName;
         uint256 rewardAmount;
@@ -297,19 +298,21 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         uint256 image;
     }
 
-    struct ticket {
+    struct Ticket {
         address owner;
         uint256 raffleID;
         uint256 amount;
     }
 
-    raffle[] raffles;
+    Raffle[] raffles;
 
-    mapping(address => mapping(uint256 => ticket)) ticketsBought;
+    mapping(address => mapping(uint256 => Ticket)) ticketsBought;
     mapping(address => mapping(uint256 => bool)) isWinnerOf;
-    mapping(address => uint256) balanceToReturn;
-    mapping(uint256 => address[]) joinedAddresses;
     mapping(uint256 => bool) losersPaidBack;
+
+    mapping(uint256 => address[]) joinedAddresses;
+    mapping(uint256 => mapping(address => bool)) joinedRaffle;
+    error AlreadyJoined();
 
     // RAFFLE TOOLS
 
@@ -320,36 +323,35 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         uint256 _price,
         uint256 _image
     ) public onlyOwner {
-        raffles[raffleCounter - 1] = raffle(
-            raffleCounter,
-            _raffleName,
-            _rewardAmount,
-            block.timestamp,
-            _endTime,
-            _price,
-            0,
-            _image
+        if (_endTime <= block.timestamp) revert();
+        raffles.push(
+            Raffle(
+                raffleCounter,
+                _raffleName,
+                _rewardAmount,
+                block.timestamp,
+                _endTime,
+                _price,
+                0,
+                _image
+            )
         );
         raffleCounter++;
     }
 
     function addJoinerToList(address _address, uint256 id) internal {
+        if (joinedRaffle[id][_address]) revert AlreadyJoined();
         address[] storage list = joinedAddresses[id];
-        for (uint256 i = 0; i < list.length; i++) {
-            if (list[i] == _address) {
-                break;
-            } else {
-                list[list.length] = _address;
-            }
-        }
+        list.push(_address);
+        joinedRaffle[id][_address] = true;
     }
 
     function viewAllEntriesByRaffleId(uint256 id)
         external
         view
-        returns (ticket[] memory)
+        returns (Ticket[] memory)
     {
-        ticket[] memory list;
+        Ticket[] memory list;
         for (uint256 i = 0; i < joinedAddresses[id].length; i++) {
             list[i] = ticketsBought[joinedAddresses[id][i]][id];
         }
@@ -362,7 +364,7 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         nonReentrant
     {
         require(raffleid <= raffles.length, "Raffle ID Does not exist");
-        raffle storage choosenRaffle = raffles[raffleid - 1]; // points raffle at the index (raffleid-1).
+        Raffle storage choosenRaffle = raffles[raffleid - 1]; // points raffle at the index (raffleid-1).
         require(
             block.timestamp >= choosenRaffle.startTime,
             "Raffle has not started"
@@ -375,14 +377,13 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         require(amount > 0, "Amount must be greater than zero");
 
         if (ticketsBought[msg.sender][raffleid].raffleID != raffleid) {
-            ticketsBought[msg.sender][raffleid] = ticket(
+            ticketsBought[msg.sender][raffleid] = Ticket(
                 msg.sender,
                 raffleid,
-                amount
+                0
             );
         }
-
-        spendXP(choosenRaffle.price, msg.sender);
+        spendXP(choosenRaffle.price * amount, msg.sender);
         choosenRaffle.totalTicketsBought += amount;
         ticketsBought[msg.sender][raffleid].amount += amount;
         addJoinerToList(msg.sender, raffleid);
@@ -408,15 +409,16 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
             if (isWinnerOf[joinedAddresses[id][i]][id] == false) {
                 valueToReturn =
                     ticketsBought[joinedAddresses[id][i]][id].amount *
-                    ((9 * raffles[id].price) / 10);
+                    ((9 * raffles[index].price) / 10);
                 addXP(valueToReturn, joinedAddresses[id][i]);
             } else if (isWinnerOf[joinedAddresses[id][i]][id] == true) {
                 valueToReturn =
                     (ticketsBought[joinedAddresses[id][i]][id].amount - 1) *
-                    ((9 * raffles[id].price) / 10);
+                    ((9 * raffles[index].price) / 10);
                 addXP(valueToReturn, joinedAddresses[id][i]);
             }
         }
+        losersPaidBack[id] = true;
     }
 }
 
