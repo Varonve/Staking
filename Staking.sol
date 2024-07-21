@@ -152,6 +152,10 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         }
     }
 
+    function addXPByOwner(uint256 amount, address _address) public onlyOwner {
+        addXP(amount, _address);
+    }
+
     function addXP(uint256 amount, address _address) internal {
         totalXPSupply += amount;
         uint256 paid = 0;
