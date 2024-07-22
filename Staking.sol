@@ -112,13 +112,11 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
             stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel++;
             stakedNFTs[msg.sender][getIndexOfItem(id)]
                 .nftXPMultiplier = levelTwoMultiplier;
-            totalXPSupply -= levelTwoPrice;
         } else if (stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel == 2) {
             spendXP(levelThreePrice, msg.sender);
             stakedNFTs[msg.sender][getIndexOfItem(id)].nftLevel++;
             stakedNFTs[msg.sender][getIndexOfItem(id)]
                 .nftXPMultiplier = levelThreeMultiplier;
-            totalXPSupply -= levelThreePrice;
         } else {
             revert("Your NFT reached max level.");
         }
@@ -141,9 +139,9 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         }
 
         for (uint256 i = stakedNFTs[_address].length - 1; i >= 0; i--) {
-            if (stakedNFTs[_address][i].balance <= amount - spent) {
+            if (stakedNFTs[_address][i].balance < amount - spent) {
                 spent += stakedNFTs[_address][i].balance;
-                stakedNFTs[_address][i].balance -= 0;
+                stakedNFTs[_address][i].balance = 0;
             } else {
                 stakedNFTs[_address][i].balance -= (amount - spent);
                 spent = amount;
@@ -243,7 +241,6 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
 
         for (uint256 i = 0; i < NFTs.length; i++) {
             sum += rewardCalculationFormula(_address, i);
-            NFTs[i].lastBalanceUpdateTime = block.timestamp;
         }
         return sum;
     }
@@ -253,9 +250,10 @@ contract VaronveStaking is Ownable, ReentrancyGuard {
         StakedNFT[] storage NFTs = stakedNFTs[_address];
 
         for (uint256 i = 0; i < stakedNFTs[_address].length; i++) {
-            NFTs[i].balance += rewardCalculationFormula(_address, i);
+            uint256 rewards = rewardCalculationFormula(_address, i);
+            NFTs[i].balance += rewards;
             NFTs[i].lastBalanceUpdateTime = block.timestamp;
-            totalXPSupply += rewardCalculationFormula(_address, i);
+            totalXPSupply += rewards;
         }
     }
 
